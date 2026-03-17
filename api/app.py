@@ -32,15 +32,20 @@ from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.services.system_config_service import SystemConfigService
+from src.storage import get_db
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
+    # Startup-time schema check / sync so DB drift is surfaced early.
+    app.state.db = get_db()
     app.state.system_config_service = SystemConfigService()
     try:
         yield
     finally:
+        if hasattr(app.state, "db"):
+            delattr(app.state, "db")
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
 

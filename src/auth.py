@@ -56,9 +56,11 @@ def _ensure_env_loaded() -> None:
 
 
 def _get_data_dir() -> Path:
-    """Return DATA_DIR as parent of DATABASE_PATH."""
-    db_path = os.getenv("DATABASE_PATH", "./data/stock_analysis.db")
-    return Path(db_path).resolve().parent
+    """Return credential storage dir, preferring DATABASE_PATH parent when set."""
+    db_path = (os.getenv("DATABASE_PATH") or "").strip()
+    if db_path:
+        return Path(db_path).resolve().parent
+    return (Path(__file__).resolve().parent.parent / "data").resolve()
 
 
 def _get_credential_path() -> Path:

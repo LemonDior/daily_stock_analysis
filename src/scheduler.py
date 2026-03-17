@@ -91,31 +91,67 @@ class Scheduler:
             run_immediately: 是否在设置后立即执行一次
         """
         self._task_callback = task
-        
-        # 设置每日定时任务
-        self.schedule.every().day.at(self.schedule_time).do(self._safe_run_task)
-        logger.info(f"已设置每日定时任务，执行时间: {self.schedule_time}")
-        
+        self.add_daily_task(
+            task=task,
+            schedule_time=self.schedule_time,
+            run_immediately=run_immediately,
+            job_name="daily_task",
+        )
+
+    def add_daily_task(
+        self,
+        task: Callable,
+        schedule_time: Optional[str] = None,
+        run_immediately: bool = False,
+        job_name: str = "daily_task",
+    ) -> None:
+        actual_time = schedule_time or self.schedule_time
+        self.schedule.every().day.at(actual_time).do(self._safe_run_task, task, job_name)
+        logger.info("已设置每日定时任务: %s @ %s", job_name, actual_time)
+
         if run_immediately:
-            logger.info("立即执行一次任务...")
-            self._safe_run_task()
-    
-    def _safe_run_task(self):
+            logger.info("立即执行一次任务: %s", job_name)
+            self._safe_run_task(task, job_name)
+
+    def add_weekly_task(
+        self,
+        task: Callable,
+        *,
+        weekday: str,
+        schedule_time: str,
+        run_immediately: bool = False,
+        job_name: str = "weekly_task",
+    ) -> None:
+        weekday_lower = weekday.strip().lower()
+        if not hasattr(self.schedule.every(), weekday_lower):
+            raise ValueError(f"不支持的星期配置: {weekday}")
+
+        getattr(self.schedule.every(), weekday_lower).at(schedule_time).do(
+            self._safe_run_task, task, job_name
+        )
+        logger.info("已设置每周定时任务: %s @ %s %s", job_name, weekday_lower, schedule_time)
+
+        if run_immediately:
+            logger.info("立即执行一次任务: %s", job_name)
+            self._safe_run_task(task, job_name)
+
+    def _safe_run_task(self, task: Optional[Callable] = None, job_name: str = "task"):
         """安全执行任务（带异常捕获）"""
-        if self._task_callback is None:
+        callback = task or self._task_callback
+        if callback is None:
             return
         
         try:
             logger.info("=" * 50)
-            logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("%s 开始执行 - %s", job_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             logger.info("=" * 50)
             
-            self._task_callback()
+            callback()
             
-            logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("%s 执行完成 - %s", job_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             
         except Exception as e:
-            logger.exception(f"定时任务执行失败: {e}")
+            logger.exception("%s 执行失败: %s", job_name, e)
     
     def run(self):
         """

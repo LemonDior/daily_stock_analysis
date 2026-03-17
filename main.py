@@ -49,6 +49,7 @@ from src.core.market_review import run_market_review
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.storage import get_db
 
 
 logger = logging.getLogger(__name__)
@@ -533,6 +534,9 @@ def main() -> int:
     for warning in warnings:
         logger.warning(warning)
 
+    # 启动时即完成数据库 migration 检查，避免运行中首次访问才暴露问题。
+    get_db()
+
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
     if args.stocks:
@@ -676,16 +680,33 @@ def main() -> int:
 
             logger.info(f"启动时立即执行: {should_run_immediately}")
 
-            from src.scheduler import run_with_schedule
+            from src.scheduler import Scheduler
 
             def scheduled_task():
                 run_full_analysis(config, args, stock_codes)
 
-            run_with_schedule(
+            scheduler = Scheduler(schedule_time=config.schedule_time)
+            scheduler.add_daily_task(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately
+                run_immediately=should_run_immediately,
+                job_name="daily_analysis",
             )
+
+            if getattr(config, "cn_stock_master_sync_enabled", False):
+                logger.info("A股主数据周更任务已启用: 每周日 %s", config.cn_stock_master_sync_time)
+                from src.services.cn_stock_master_sync_service import CNStockMasterSyncService
+
+                sync_service = CNStockMasterSyncService()
+                scheduler.add_weekly_task(
+                    task=sync_service.sync,
+                    weekday="sunday",
+                    schedule_time=config.cn_stock_master_sync_time,
+                    run_immediately=False,
+                    job_name="cn_stock_master_sync",
+                )
+
+            scheduler.run()
             return 0
 
         # 模式3: 正常单次运行

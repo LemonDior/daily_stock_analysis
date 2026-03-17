@@ -2,6 +2,9 @@
 import unittest
 import sys
 import os
+import tempfile
+from pathlib import Path
+from sqlalchemy import text
 
 # Ensure src module can be imported
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -90,6 +93,180 @@ class TestStorage(unittest.TestCase):
         self.assertEqual({item["session_id"] for item in sessions}, {"feishu_u1", "feishu_u1:ask_600519"})
 
         DatabaseManager.reset_instance()
+
+    def test_config_database_url_mysql_is_normalized(self):
+        from src.config import Config
+
+        cfg = Config(
+            stock_list=["600519"],
+            database_url="mysql://user:pass@127.0.0.1:3306/dsa?charset=utf8mb4",
+        )
+
+        self.assertEqual(
+            cfg.get_db_url(),
+            "mysql+pymysql://user:pass@127.0.0.1:3306/dsa?charset=utf8mb4",
+        )
+
+    def test_config_database_url_takes_precedence_over_database_path(self):
+        from src.config import Config
+
+        cfg = Config(
+            stock_list=["600519"],
+            database_url="mysql+pymysql://user:pass@127.0.0.1:3306/dsa",
+            database_path="./data/should_not_be_used.db",
+        )
+
+        self.assertEqual(
+            cfg.get_db_url(),
+            "mysql+pymysql://user:pass@127.0.0.1:3306/dsa",
+        )
+
+    def test_config_database_path_fallback_creates_parent_dir(self):
+        from src.config import Config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "nested" / "stock_analysis.db"
+            cfg = Config(
+                stock_list=["600519"],
+                database_path=str(db_path),
+            )
+
+            db_url = cfg.get_db_url()
+
+            self.assertTrue(db_path.parent.exists())
+            self.assertTrue(db_url.startswith("sqlite:///"))
+            self.assertTrue(db_url.endswith("stock_analysis.db"))
+
+    def test_upsert_cn_stock_master_records(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        first = db.upsert_cn_stock_master_records([
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "exchange": "SSE",
+                "market": "main",
+                "industry": "酿酒行业",
+                "area": "贵州",
+                "list_status": "listed",
+                "is_risk_warning": False,
+                "list_date": None,
+                "delist_date": None,
+                "is_active": True,
+                "source": "test",
+                "source_updated_at": None,
+            }
+        ])
+        second = db.upsert_cn_stock_master_records([
+            {
+                "code": "600519",
+                "name": "贵州茅台股份",
+                "exchange": "SSE",
+                "market": "main",
+                "industry": "白酒",
+                "area": "贵州",
+                "list_status": "listed",
+                "is_risk_warning": False,
+                "list_date": None,
+                "delist_date": None,
+                "is_active": True,
+                "source": "test2",
+                "source_updated_at": None,
+            }
+        ])
+
+        with db.get_session() as session:
+            row = session.execute(
+                text("SELECT code, name, industry, source FROM cn_stock_master WHERE code='600519'")
+            ).fetchone()
+
+        self.assertEqual(first, {"inserted": 1, "updated": 0})
+        self.assertEqual(second, {"inserted": 0, "updated": 1})
+        self.assertEqual(tuple(row), ("600519", "贵州茅台股份", "白酒", "test2"))
+
+        DatabaseManager.reset_instance()
+
+    def test_schema_migration_row_created_on_init(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        with db.get_session() as session:
+            rows = session.execute(
+                text("SELECT version, script, checksum FROM schema_migrations ORDER BY version")
+            ).fetchall()
+
+        self.assertEqual([row[0] for row in rows], ["0001", "0002", "0003", "0004", "0005", "0006"])
+        self.assertEqual(
+            [row[1] for row in rows],
+            [
+                "V0001__baseline_schema.sqlite.sql",
+                "V0002__create_migration_demo_records.sqlite.sql",
+                "V0003__add_chinese_table_comments.sqlite.sql",
+                "V0004__add_chinese_column_comments.sqlite.sql",
+                "V0005__create_cn_stock_master.sqlite.sql",
+                "V0006__fix_cn_stock_master_charset.sqlite.sql",
+            ],
+        )
+        self.assertTrue(all(len(row[2]) == 32 for row in rows))
+
+        DatabaseManager.reset_instance()
+
+    def test_fresh_database_creates_all_declared_tables(self):
+        from src.storage import Base
+
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        with db.get_session() as session:
+            tables = {
+                row[0]
+                for row in session.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table'")
+                ).fetchall()
+            }
+
+        expected_tables = set(Base.metadata.tables.keys())
+        self.assertTrue(expected_tables.issubset(tables))
+        self.assertIn("schema_migrations", tables)
+
+        DatabaseManager.reset_instance()
+
+    def test_existing_table_missing_columns_requires_explicit_migration(self):
+        DatabaseManager.reset_instance()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "schema_patch_test.db"
+            bootstrap_db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            with bootstrap_db.get_session() as session:
+                session.execute(text("DROP TABLE IF EXISTS analysis_history"))
+                session.execute(
+                    text(
+                        """
+                        CREATE TABLE analysis_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            code VARCHAR(10) NOT NULL,
+                            created_at DATETIME
+                        )
+                        """
+                    )
+                )
+                session.commit()
+            DatabaseManager.reset_instance()
+
+            patched_db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            with patched_db.get_session() as session:
+                columns = session.execute(text("PRAGMA table_info('analysis_history')")).fetchall()
+                migrations = session.execute(
+                    text("SELECT version FROM schema_migrations ORDER BY version")
+                ).fetchall()
+
+            column_names = {row[1] for row in columns}
+            self.assertNotIn("query_id", column_names)
+            self.assertNotIn("analysis_summary", column_names)
+            self.assertEqual([row[0] for row in migrations], ["0001", "0002", "0003", "0004", "0005", "0006"])
+
+            DatabaseManager.reset_instance()
 
 if __name__ == '__main__':
     unittest.main()

@@ -463,6 +463,7 @@ class Config:
     prefetch_realtime_quotes: bool = True
 
     # === 数据库配置 ===
+    database_url: Optional[str] = None
     database_path: str = "./data/stock_analysis.db"
 
     # 是否保存分析上下文快照（用于历史回溯）
@@ -489,6 +490,8 @@ class Config:
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
+    cn_stock_master_sync_enabled: bool = False  # 是否启用 A 股主数据周更任务
+    cn_stock_master_sync_time: str = "21:00"    # 每周日主数据同步时间（HH:MM）
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
@@ -986,6 +989,7 @@ class Config:
             markdown_to_image_max_chars=int(os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS', '15000')),
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
+            database_url=os.getenv('DATABASE_URL'),
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
@@ -1003,6 +1007,8 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             schedule_run_immediately=os.getenv('SCHEDULE_RUN_IMMEDIATELY', 'true').lower() == 'true',
+            cn_stock_master_sync_enabled=os.getenv('CN_STOCK_MASTER_SYNC_ENABLED', 'false').lower() == 'true',
+            cn_stock_master_sync_time=os.getenv('CN_STOCK_MASTER_SYNC_TIME', '21:00'),
             run_immediately=os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
@@ -1685,8 +1691,14 @@ class Config:
         """
         获取 SQLAlchemy 数据库连接 URL
         
-        自动创建数据库目录（如果不存在）
+        优先使用 DATABASE_URL；未配置时回退到本地 SQLite DATABASE_PATH。
         """
+        if self.database_url and self.database_url.strip():
+            db_url = self.database_url.strip()
+            if db_url.startswith("mysql://"):
+                return f"mysql+pymysql://{db_url[len('mysql://'):]}"
+            return db_url
+
         db_path = Path(self.database_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{db_path.absolute()}"
@@ -1745,7 +1757,7 @@ if __name__ == "__main__":
     config = get_config()
     print("=== 配置加载测试 ===")
     print(f"自选股列表: {config.stock_list}")
-    print(f"数据库路径: {config.database_path}")
+    print(f"数据库连接: {config.get_db_url()}")
     print(f"最大并发数: {config.max_workers}")
     print(f"调试模式: {config.debug}")
     

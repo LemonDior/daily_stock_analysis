@@ -5,7 +5,7 @@ A股自选股智能分析系统 - 存储层
 ===================================
 
 职责：
-1. 管理 SQLite 数据库连接（单例模式）
+1. 管理 SQLAlchemy 数据库连接（默认 SQLite，可切换 MySQL）
 2. 定义 ORM 数据模型
 3. 提供数据存取接口
 4. 实现智能更新逻辑（断点续传）
@@ -13,7 +13,6 @@ A股自选股智能分析系统 - 存储层
 
 import atexit
 from contextlib import contextmanager
-import hashlib
 import json
 import logging
 import re
@@ -40,6 +39,7 @@ from sqlalchemy import (
     delete,
     desc,
     func,
+    text,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -49,6 +49,7 @@ from sqlalchemy.orm import (
 from sqlalchemy.exc import IntegrityError
 
 from src.config import get_config
+from src.db_migrations.runner import MigrationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +621,45 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class MigrationDemoRecord(Base):
+    """Demo table used to illustrate the versioned migration workflow."""
+
+    __tablename__ = "migration_demo_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(128), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    notes = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+
+class CNStockMaster(Base):
+    """A 股股票主数据表。"""
+
+    __tablename__ = "cn_stock_master"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, unique=True)
+    name = Column(String(64), nullable=False, index=True)
+    exchange = Column(String(8), nullable=False)
+    market = Column(String(16), nullable=False)
+    industry = Column(String(128), index=True)
+    area = Column(String(64))
+    list_status = Column(String(16), nullable=False, index=True, default="listed")
+    is_risk_warning = Column(Boolean, nullable=False, index=True, default=False)
+    list_date = Column(Date)
+    delist_date = Column(Date)
+    is_active = Column(Boolean, nullable=False, index=True, default=True)
+    source = Column(String(32), nullable=False, default="manual")
+    source_updated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    __table_args__ = (
+        Index("idx_cn_stock_master_exchange_market", "exchange", "market"),
+    )
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -632,7 +672,6 @@ class DatabaseManager:
     
     _instance: Optional['DatabaseManager'] = None
     _initialized: bool = False
-    
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
         if cls._instance is None:
@@ -653,12 +692,18 @@ class DatabaseManager:
         if db_url is None:
             config = get_config()
             db_url = config.get_db_url()
+
+        engine_kwargs = {
+            "echo": False,
+            "pool_pre_ping": True,
+        }
+        if db_url.startswith("sqlite:"):
+            engine_kwargs["connect_args"] = {"check_same_thread": False}
         
         # 创建数据库引擎
         self._engine = create_engine(
             db_url,
-            echo=False,  # 设为 True 可查看 SQL 语句
-            pool_pre_ping=True,  # 连接健康检查
+            **engine_kwargs,
         )
         
         # 创建 Session 工厂
@@ -668,8 +713,8 @@ class DatabaseManager:
             autoflush=False,
         )
         
-        # 创建所有表
-        Base.metadata.create_all(self._engine)
+        # 启动时执行版本化 migration（Flyway-style）
+        MigrationRunner(self._engine, Base.metadata).migrate()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -709,7 +754,7 @@ class DatabaseManager:
                 logger.debug("数据库引擎已清理")
         except Exception as e:
             logger.warning(f"清理数据库引擎时出错: {e}")
-    
+
     def get_session(self) -> Session:
         """
         获取数据库 Session
@@ -1349,6 +1394,96 @@ class DatabaseManager:
                 raise
         
         return saved_count
+
+    def upsert_cn_stock_master_records(self, records: List[Dict[str, Any]]) -> Dict[str, int]:
+        """
+        批量写入或更新 A 股股票主数据。
+
+        Args:
+            records: 标准化后的股票主数据列表
+
+        Returns:
+            写入统计信息
+        """
+        if not records:
+            return {"inserted": 0, "updated": 0}
+
+        now = datetime.now()
+        inserted = 0
+        updated = 0
+        codes = sorted({str(item.get("code") or "").strip() for item in records if item.get("code")})
+        batch_size = 500
+
+        with self.get_session() as session:
+            try:
+                existing_rows = session.execute(
+                    select(CNStockMaster).where(CNStockMaster.code.in_(codes))
+                ).scalars().all()
+                existing_by_code = {row.code: row for row in existing_rows}
+                insert_mappings: List[Dict[str, Any]] = []
+                update_mappings: List[Dict[str, Any]] = []
+
+                for item in records:
+                    code = str(item.get("code") or "").strip()
+                    name = str(item.get("name") or "").strip()
+                    if not code or not name:
+                        continue
+
+                    payload = {
+                        "name": name,
+                        "exchange": str(item.get("exchange") or "").strip(),
+                        "market": str(item.get("market") or "").strip(),
+                        "industry": item.get("industry"),
+                        "area": item.get("area"),
+                        "list_status": str(item.get("list_status") or "listed").strip(),
+                        "is_risk_warning": bool(item.get("is_risk_warning", False)),
+                        "list_date": item.get("list_date"),
+                        "delist_date": item.get("delist_date"),
+                        "is_active": bool(item.get("is_active", True)),
+                        "source": str(item.get("source") or "manual").strip(),
+                        "source_updated_at": item.get("source_updated_at"),
+                    }
+
+                    existing = existing_by_code.get(code)
+                    if existing is None:
+                        insert_mappings.append(
+                            {
+                                "code": code,
+                                "created_at": now,
+                                "updated_at": now,
+                                **payload,
+                            }
+                        )
+                        inserted += 1
+                        continue
+
+                    update_mappings.append(
+                        {
+                            "id": existing.id,
+                            "updated_at": now,
+                            **payload,
+                        }
+                    )
+                    updated += 1
+
+                for start in range(0, len(insert_mappings), batch_size):
+                    session.bulk_insert_mappings(
+                        CNStockMaster,
+                        insert_mappings[start:start + batch_size],
+                    )
+                    session.commit()
+
+                for start in range(0, len(update_mappings), batch_size):
+                    session.bulk_update_mappings(
+                        CNStockMaster,
+                        update_mappings[start:start + batch_size],
+                    )
+                    session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+        return {"inserted": inserted, "updated": updated}
     
     def get_analysis_context(
         self, 

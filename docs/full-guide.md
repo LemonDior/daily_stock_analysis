@@ -277,6 +277,8 @@ daily_stock_analysis/
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
+| `CN_STOCK_MASTER_SYNC_ENABLED` | 启用每周日 A 股主数据同步 | `false` |
+| `CN_STOCK_MASTER_SYNC_TIME` | 每周日主数据同步时间 | `21:00` |
 | `LOG_DIR` | 日志目录 | `./logs` |
 
 ---
@@ -481,13 +483,15 @@ python main.py --schedule --no-run-immediately
 | `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
 | `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
 | `SCHEDULE_RUN_IMMEDIATELY` | 启动服务时是否立即运行一次 | `true` | `false` |
+| `CN_STOCK_MASTER_SYNC_ENABLED` | 是否启用每周日 `cn_stock_master` 同步 | `false` | `true` |
+| `CN_STOCK_MASTER_SYNC_TIME` | 每周日同步时间 (HH:MM) | `21:00` | `21:30` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
 
 例如在 Docker 中配置：
 
 ```bash
-# 设置启动时不立即分析
-docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
+# 设置启动时不立即分析，并在每周日晚上同步 A 股主数据
+docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false -e CN_STOCK_MASTER_SYNC_ENABLED=true ...
 ```
 
 #### 交易日判断（Issue #373）

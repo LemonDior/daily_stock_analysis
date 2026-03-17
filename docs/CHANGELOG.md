@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### 新功能
 
 - 📱 **Social Sentiment Intelligence (US stocks)** — 新增 Reddit / X (Twitter) / Polymarket 社交媒体情绪数据源，为美股分析提供实时社交舆情情报。数据来自 api.adanos.org，包含 Buzz Score、情绪评分、提及量等指标。完全可选（需配置 `SOCIAL_SENTIMENT_API_KEY`），仅对美股生效，A 股 / 港股不受影响。
+- 🗄️ **MySQL 数据库支持** — 新增 `DATABASE_URL` 配置，运行时可直接切换到 MySQL；兼容 `mysql://` 自动规范化为 SQLAlchemy 可用的 `mysql+pymysql://`，未配置时继续默认使用 SQLite `DATABASE_PATH`。数据库演进机制已改为基于 SQL 文件的 Flyway-style 版本化 migration：启动时扫描 `src/db_migrations/sql/` 下的 `V*.sql`，以 `schema_migrations` 记录已执行脚本与 SQL 文件 MD5，不再依赖按 ORM metadata 自动补列/补索引。
+- 📝 **数据库表中文注释示例 migration** — 新增 `V0003__add_chinese_table_comments`，演示如何通过 SQL migration 为现有表补充 MySQL 中文表注释；SQLite 路径保持 no-op，用于兼容不支持表注释的方言。
+- 🏷️ **数据库字段中文注释示例 migration** — 新增 `V0004__add_chinese_column_comments`，通过 `information_schema.columns` 动态保留 MySQL 当前字段定义并补充中文字段注释；同时把“新表和新字段默认补注释”写入迁移规范。
+- 🧾 **A股股票主数据表** — 新增 `cn_stock_master` 表及 `V0005__create_cn_stock_master` migration，用于维护 A 股股票基础资料；字段包含交易所、板块、行业、地域、上市状态、风险警示股标记、数据来源与更新时间，并在 MySQL 路径补齐表注释和字段注释。
+- 🗓️ **A股主数据周更任务** — 新增 `CN_STOCK_MASTER_SYNC_ENABLED` / `CN_STOCK_MASTER_SYNC_TIME` 配置；在 `--schedule` 模式下可于每周日夜间自动通过 AkShare 同步 `cn_stock_master` 表，采用 upsert 方式更新股票名称、板块、行业和风险警示标记。
+- 🔤 **A股主数据字符集修正** — 新增 `V0006__fix_cn_stock_master_charset`，将 `cn_stock_master` 转为 `utf8mb4`，避免中文股票名在非 UTF-8 默认库配置下写入失败。
 ### 文档
 
 - 新增云服务器 Web 界面部署与访问教程 (Fixes #686)

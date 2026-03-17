@@ -243,6 +243,27 @@ LITELLM_MODEL=openai/deepseek-chat
 
 如果同时启用了 `LITELLM_CONFIG`，YAML 仍然是运行时主模型 / fallback / Vision 的唯一来源；渠道编辑器只保存渠道条目，不会覆盖 YAML 的运行时选择。
 
+数据库默认使用本地 SQLite（`DATABASE_PATH=./data/stock_analysis.db`）。如需改为 MySQL，直接在 `.env` 中配置 `DATABASE_URL`，例如：
+
+```env
+DATABASE_URL=mysql+pymysql://user:password@127.0.0.1:3306/dsa?charset=utf8mb4
+```
+
+也兼容 `mysql://...` 写法，运行时会自动规范化为 `mysql+pymysql://...`。
+
+服务启动时会执行版本化数据库迁移（Flyway-style）：
+- 迁移历史记录保存在 `schema_migrations`
+- 迁移脚本放在 `src/db_migrations/sql/`
+- 按 `V0001__description.sql` 的版本顺序执行
+- 支持 `V0001__description.mysql.sql` / `V0001__description.sqlite.sql` 这类方言专用脚本
+- checksum 使用 SQL 文件内容的 MD5
+
+这意味着后续数据库变更不再依赖“按 ORM metadata 自动补列/补索引”，而是要求显式编写 migration。
+
+如果你后续需要新增字段或新建表，可参考 [数据库 Schema 演进说明](docs/DB_SCHEMA_SYNC.md)。
+
+如果你启用了内建定时模式，还可以额外开启 `CN_STOCK_MASTER_SYNC_ENABLED=true`，让系统每周日晚上自动通过 AkShare 同步 `cn_stock_master` 表。
+
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
 > 桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)
 
