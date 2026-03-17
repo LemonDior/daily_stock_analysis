@@ -11,6 +11,7 @@ from .astrbot_sender import AstrbotSender
 from .custom_webhook_sender import CustomWebhookSender
 from .discord_sender import DiscordSender
 from .email_sender import EmailSender
+from .feishu_app_sender import FeishuAppSender
 from .feishu_sender import FeishuSender
 from .pushover_sender import PushoverSender
 from .pushplus_sender import PushplusSender

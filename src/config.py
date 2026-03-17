@@ -384,6 +384,9 @@ class Config:
     
     # 飞书 Webhook
     feishu_webhook_url: Optional[str] = None
+    feishu_app_alert_enabled: bool = False
+    feishu_app_receive_id_type: str = "chat_id"
+    feishu_app_receive_ids: List[str] = field(default_factory=list)
     
     # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
@@ -491,7 +494,7 @@ class Config:
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     cn_stock_master_sync_enabled: bool = False  # 是否启用 A 股主数据周更任务
-    cn_stock_master_sync_time: str = "21:00"    # 每周日主数据同步时间（HH:MM）
+    cn_stock_master_sync_time: str = "20:00"    # 每周五主数据同步时间（HH:MM）
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
@@ -598,6 +601,7 @@ class Config:
     _VALID_AGENT_ARCH = {"single", "multi"}
     _VALID_ORCHESTRATOR_MODES = {"quick", "standard", "full", "strategy"}
     _VALID_STRATEGY_ROUTING = {"auto", "manual"}
+    _VALID_FEISHU_RECEIVE_ID_TYPES = {"chat_id", "open_id", "user_id"}
 
     def __post_init__(self) -> None:
         _log = logging.getLogger(__name__)
@@ -619,6 +623,13 @@ class Config:
                 self.agent_strategy_routing, self._VALID_STRATEGY_ROUTING,
             )
             object.__setattr__(self, "agent_strategy_routing", "auto")
+        if self.feishu_app_receive_id_type not in self._VALID_FEISHU_RECEIVE_ID_TYPES:
+            _log.warning(
+                "Invalid FEISHU_APP_RECEIVE_ID_TYPE=%r, falling back to 'chat_id'. Valid: %s",
+                self.feishu_app_receive_id_type,
+                self._VALID_FEISHU_RECEIVE_ID_TYPES,
+            )
+            object.__setattr__(self, "feishu_app_receive_id_type", "chat_id")
 
     # 单例实例存储
     _instance: Optional['Config'] = None
@@ -943,6 +954,13 @@ class Config:
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
+            feishu_app_alert_enabled=os.getenv('FEISHU_APP_ALERT_ENABLED', 'false').lower() == 'true',
+            feishu_app_receive_id_type=os.getenv('FEISHU_APP_RECEIVE_ID_TYPE', 'chat_id').strip().lower(),
+            feishu_app_receive_ids=[
+                item.strip()
+                for item in os.getenv('FEISHU_APP_RECEIVE_IDS', '').split(',')
+                if item.strip()
+            ],
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
@@ -1008,7 +1026,7 @@ class Config:
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             schedule_run_immediately=os.getenv('SCHEDULE_RUN_IMMEDIATELY', 'true').lower() == 'true',
             cn_stock_master_sync_enabled=os.getenv('CN_STOCK_MASTER_SYNC_ENABLED', 'false').lower() == 'true',
-            cn_stock_master_sync_time=os.getenv('CN_STOCK_MASTER_SYNC_TIME', '21:00'),
+            cn_stock_master_sync_time=os.getenv('CN_STOCK_MASTER_SYNC_TIME', '20:00'),
             run_immediately=os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
@@ -1599,6 +1617,12 @@ class Config:
         has_notification = bool(
             self.wechat_webhook_url
             or self.feishu_webhook_url
+            or (
+                self.feishu_app_alert_enabled
+                and self.feishu_app_id
+                and self.feishu_app_secret
+                and self.feishu_app_receive_ids
+            )
             or (self.telegram_bot_token and self.telegram_chat_id)
             or (self.email_sender and self.email_password)
             or (self.pushover_user_key and self.pushover_api_token)
@@ -1615,6 +1639,42 @@ class Config:
                 message="未配置通知渠道，将不发送推送通知",
                 field="WECHAT_WEBHOOK_URL",
             ))
+
+        if self.feishu_app_alert_enabled and not (self.feishu_app_id and self.feishu_app_secret):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message="已启用飞书应用机器人主动推送，但 FEISHU_APP_ID / FEISHU_APP_SECRET 未配置完整",
+                field="FEISHU_APP_ID",
+            ))
+
+        if self.feishu_app_alert_enabled and not self.feishu_app_receive_ids:
+            issues.append(ConfigIssue(
+                severity="warning",
+                message="已启用飞书应用机器人主动推送，但 FEISHU_APP_RECEIVE_IDS 为空，无法找到默认接收者",
+                field="FEISHU_APP_RECEIVE_IDS",
+            ))
+
+        if self.agent_event_monitor_enabled and not self.agent_event_alert_rules_json.strip():
+            issues.append(ConfigIssue(
+                severity="warning",
+                message="已启用股票告警监控，但 AGENT_EVENT_ALERT_RULES_JSON 为空，后台监控不会启动",
+                field="AGENT_EVENT_ALERT_RULES_JSON",
+            ))
+        elif self.agent_event_monitor_enabled and self.agent_event_alert_rules_json.strip():
+            try:
+                rules_payload = json.loads(self.agent_event_alert_rules_json)
+                if not isinstance(rules_payload, list):
+                    issues.append(ConfigIssue(
+                        severity="warning",
+                        message="AGENT_EVENT_ALERT_RULES_JSON 必须是 JSON 数组，股票告警监控将跳过规则加载",
+                        field="AGENT_EVENT_ALERT_RULES_JSON",
+                    ))
+            except json.JSONDecodeError:
+                issues.append(ConfigIssue(
+                    severity="warning",
+                    message="AGENT_EVENT_ALERT_RULES_JSON 不是合法 JSON，股票告警监控将跳过规则加载",
+                    field="AGENT_EVENT_ALERT_RULES_JSON",
+                ))
 
         # --- Deprecated field migration hints ---
         if os.getenv("OPENAI_VISION_MODEL"):

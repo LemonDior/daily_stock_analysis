@@ -41,6 +41,7 @@
 | 回测 | AI 回测验证 | 自动评估历史分析准确率，方向胜率、止盈止损命中率 |
 | **Agent 问股** | **策略对话** | **多轮策略问答，支持均线金叉/缠论/波浪等 11 种内置策略，Web/Bot/API 全链路** |
 | 推送 | 多渠道通知 | 企业微信、飞书、Telegram、Discord、钉钉、邮件、Pushover |
+| 监控 | 股票条件告警 | 支持价格/涨跌幅/量比阈值监控，命中后主动推送到飞书应用机器人或现有通知渠道 |
 | 自动化 | 定时运行 | GitHub Actions 定时执行，无需服务器 |
 
 > 历史报告详情会优先展示 AI 返回的原始「狙击点位」文本，避免区间价、条件说明等复杂内容在历史回看时被压缩成单个数字。
@@ -113,6 +114,11 @@
 |------------|------|:----:|
 | `WECHAT_WEBHOOK_URL` | 企业微信 Webhook URL | 可选 |
 | `FEISHU_WEBHOOK_URL` | 飞书 Webhook URL | 可选 |
+| `FEISHU_APP_ID` | 飞书应用机器人 App ID（主动推送/Stream 模式共用） | 可选 |
+| `FEISHU_APP_SECRET` | 飞书应用机器人 App Secret | 可选 |
+| `FEISHU_APP_ALERT_ENABLED` | 启用飞书应用机器人主动推送（股票告警优先走这里） | 可选 |
+| `FEISHU_APP_RECEIVE_ID_TYPE` | 主动推送接收者 ID 类型：`chat_id` / `open_id` / `user_id` | 可选 |
+| `FEISHU_APP_RECEIVE_IDS` | 默认接收者 ID，多个用逗号分隔；规则未单独指定时使用 | 可选 |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（@BotFather 获取） | 可选 |
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
 | `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (用于发送到子话题) | 可选 |
@@ -140,11 +146,19 @@
 | `REPORT_HISTORY_COMPARE_N` | 历史信号对比条数，`0` 关闭（默认），`>0` 启用 | 可选 |
 | `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
 | `MERGE_EMAIL_NOTIFICATION` | 个股与大盘复盘合并推送（默认 false），减少邮件数量 | 可选 |
+| `AGENT_EVENT_MONITOR_ENABLED` | 启用股票告警后台监控（长运行模式下生效） | 可选 |
+| `AGENT_EVENT_MONITOR_INTERVAL_MINUTES` | 股票告警轮询间隔（分钟） | 可选 |
+| `AGENT_EVENT_ALERT_RULES_JSON` | 股票告警规则 JSON 数组，支持 `price_cross` / `change_pct` / `volume_ratio` | 可选 |
 | `MARKDOWN_TO_IMAGE_CHANNELS` | 将 Markdown 转为图片发送的渠道（逗号分隔）：`telegram,wechat,custom,email` | 可选 |
 | `MARKDOWN_TO_IMAGE_MAX_CHARS` | 超过此长度不转图片，避免超大图片（默认 `15000`） | 可选 |
 | `MD2IMG_ENGINE` | 转图引擎：`wkhtmltoimage`（默认）或 `markdown-to-file`（emoji 更好） | 可选 |
 
 > 至少配置一个渠道，配置多个则同时推送。图片发送与引擎安装细节请参考 [完整指南](docs/full-guide.md)
+>
+> 股票告警规则示例：
+> `AGENT_EVENT_ALERT_RULES_JSON=[{"rule_id":"moutai_break_1800","stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800,"cooldown_minutes":30},{"rule_id":"catl_pct_up_5","stock_code":"300750","alert_type":"change_pct","direction":"above","change_pct":5}]`
+> 
+> 若某条规则只想推给特定飞书用户/群，可在规则中单独加 `receive_id_type` 和 `receive_ids` 覆盖全局默认目标。
 
 </details>
 
@@ -262,7 +276,17 @@ DATABASE_URL=mysql+pymysql://user:password@127.0.0.1:3306/dsa?charset=utf8mb4
 
 如果你后续需要新增字段或新建表，可参考 [数据库 Schema 演进说明](docs/DB_SCHEMA_SYNC.md)。
 
-如果你启用了内建定时模式，还可以额外开启 `CN_STOCK_MASTER_SYNC_ENABLED=true`，让系统每周日晚上自动通过 AkShare 同步 `cn_stock_master` 表。
+如果你启用了内建定时模式，还可以额外开启 `CN_STOCK_MASTER_SYNC_ENABLED=true`，让系统每周五晚上 20:00 自动通过 AkShare 同步 `cn_stock_master` 表。同步时会按 `code` 判断：不存在则新增，存在则更新，并保持 `code` 唯一。
+
+另外，`--schedule` 模式下系统会固定在每天 18:00 执行一次 `stock_daily` 日线补齐任务：先通过 AkShare 的 A 股交易日历接口判断当天是否为交易日；若是，再根据 `cn_stock_master` 中的全部 code 补齐当天缺失的日线数据。历史缺口可通过 `StockDailySyncService.backfill_history_from_master()` 一次性回填。
+
+如需手动执行，可直接运行测试类启动器：
+
+```bash
+python3 tests/manual_stock_daily_sync_runner.py history-backfill
+python3 tests/manual_stock_daily_sync_runner.py history-backfill --max-codes 200
+python3 tests/manual_stock_daily_sync_runner.py daily-sync
+```
 
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
 > 桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)

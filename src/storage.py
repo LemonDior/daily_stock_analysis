@@ -660,6 +660,22 @@ class CNStockMaster(Base):
     )
 
 
+class StockAlertState(Base):
+    """股票告警状态表。"""
+
+    __tablename__ = "stock_alert_state"
+
+    rule_id = Column(String(128), primary_key=True)
+    stock_code = Column(String(10), nullable=False, index=True)
+    alert_type = Column(String(32), nullable=False, index=True)
+    last_condition_met = Column(Boolean, nullable=False, default=False)
+    last_triggered_at = Column(DateTime)
+    last_trigger_value = Column(Float)
+    last_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -1411,7 +1427,19 @@ class DatabaseManager:
         now = datetime.now()
         inserted = 0
         updated = 0
-        codes = sorted({str(item.get("code") or "").strip() for item in records if item.get("code")})
+        normalized_records: Dict[str, Dict[str, Any]] = {}
+        for item in records:
+            code = str(item.get("code") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not code or not name:
+                continue
+            # 同一批次内若出现重复 code，保留最后一条，确保 code 唯一。
+            normalized_records[code] = item
+
+        if not normalized_records:
+            return {"inserted": 0, "updated": 0}
+
+        codes = sorted(normalized_records)
         batch_size = 500
 
         with self.get_session() as session:
@@ -1423,11 +1451,9 @@ class DatabaseManager:
                 insert_mappings: List[Dict[str, Any]] = []
                 update_mappings: List[Dict[str, Any]] = []
 
-                for item in records:
-                    code = str(item.get("code") or "").strip()
+                for code in codes:
+                    item = normalized_records[code]
                     name = str(item.get("name") or "").strip()
-                    if not code or not name:
-                        continue
 
                     payload = {
                         "name": name,
@@ -1484,6 +1510,186 @@ class DatabaseManager:
                 raise
 
         return {"inserted": inserted, "updated": updated}
+
+    def delete_cn_stock_master_records_not_matching_prefixes(self, prefixes: Tuple[str, ...]) -> int:
+        """
+        删除 `cn_stock_master` 中 code 不以指定前缀开头的记录。
+
+        Args:
+            prefixes: 允许保留的 code 前缀元组，例如 ("6", "0", "3")
+
+        Returns:
+            删除的记录数
+        """
+        normalized_prefixes = tuple(str(prefix or "").strip() for prefix in prefixes if str(prefix or "").strip())
+        if not normalized_prefixes:
+            raise ValueError("prefixes 不能为空")
+
+        filters = [CNStockMaster.code.like(f"{prefix}%") for prefix in normalized_prefixes]
+
+        with self.get_session() as session:
+            try:
+                result = session.execute(
+                    delete(CNStockMaster).where(~or_(*filters))
+                )
+                session.commit()
+                return int(result.rowcount or 0)
+            except Exception:
+                session.rollback()
+                raise
+
+    def list_cn_stock_master_sync_targets(self) -> List[Dict[str, Any]]:
+        """
+        获取用于补齐 `stock_daily` 的 A 股主数据目标列表。
+
+        Returns:
+            列表元素包含 `code` 和 `list_date`
+        """
+        with self.get_session() as session:
+            rows = session.execute(
+                select(
+                    CNStockMaster.code,
+                    CNStockMaster.list_date,
+                )
+                .where(
+                    and_(
+                        CNStockMaster.is_active.is_(True),
+                        CNStockMaster.list_status == "listed",
+                    )
+                )
+                .order_by(CNStockMaster.code)
+            ).all()
+
+        return [
+            {
+                "code": row.code,
+                "list_date": row.list_date,
+            }
+            for row in rows
+            if row.code
+        ]
+
+    def get_stock_daily_latest_dates(self, codes: Optional[List[str]] = None) -> Dict[str, date]:
+        """
+        获取每只股票在 `stock_daily` 中的最新交易日期。
+
+        Args:
+            codes: 可选，限定查询的股票代码列表
+
+        Returns:
+            `{code: latest_date}` 映射
+        """
+        if codes is not None and not codes:
+            return {}
+
+        with self.get_session() as session:
+            query = (
+                select(
+                    StockDaily.code,
+                    func.max(StockDaily.date).label("latest_date"),
+                )
+                .group_by(StockDaily.code)
+            )
+            if codes is not None:
+                query = query.where(StockDaily.code.in_(codes))
+
+            rows = session.execute(query).all()
+
+        return {
+            row.code: row.latest_date
+            for row in rows
+            if row.code and row.latest_date
+        }
+
+    def get_stock_alert_states(self, rule_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        获取股票告警状态。
+
+        Args:
+            rule_ids: 可选，限定读取的规则 ID 列表
+
+        Returns:
+            以 rule_id 为键的状态字典
+        """
+        with self.get_session() as session:
+            query = select(StockAlertState)
+            if rule_ids:
+                query = query.where(StockAlertState.rule_id.in_(rule_ids))
+
+            rows = session.execute(query).scalars().all()
+            return {
+                row.rule_id: {
+                    "rule_id": row.rule_id,
+                    "stock_code": row.stock_code,
+                    "alert_type": row.alert_type,
+                    "last_condition_met": bool(row.last_condition_met),
+                    "last_triggered_at": row.last_triggered_at,
+                    "last_trigger_value": row.last_trigger_value,
+                    "last_message": row.last_message,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                }
+                for row in rows
+            }
+
+    def upsert_stock_alert_state(
+        self,
+        *,
+        rule_id: str,
+        stock_code: str,
+        alert_type: str,
+        last_condition_met: bool,
+        last_triggered_at: Optional[datetime] = None,
+        last_trigger_value: Optional[float] = None,
+        last_message: Optional[str] = None,
+    ) -> None:
+        """
+        创建或更新股票告警状态。
+
+        Args:
+            rule_id: 告警规则 ID
+            stock_code: 股票代码
+            alert_type: 告警类型
+            last_condition_met: 最近一次检查时条件是否满足
+            last_triggered_at: 最近一次触发时间
+            last_trigger_value: 最近一次触发时的指标值
+            last_message: 最近一次触发消息
+        """
+        now = datetime.now()
+
+        with self.get_session() as session:
+            try:
+                existing = session.execute(
+                    select(StockAlertState).where(StockAlertState.rule_id == rule_id)
+                ).scalar_one_or_none()
+
+                if existing is None:
+                    session.add(
+                        StockAlertState(
+                            rule_id=rule_id,
+                            stock_code=stock_code,
+                            alert_type=alert_type,
+                            last_condition_met=last_condition_met,
+                            last_triggered_at=last_triggered_at,
+                            last_trigger_value=last_trigger_value,
+                            last_message=last_message,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    existing.stock_code = stock_code
+                    existing.alert_type = alert_type
+                    existing.last_condition_met = last_condition_met
+                    existing.last_triggered_at = last_triggered_at
+                    existing.last_trigger_value = last_trigger_value
+                    existing.last_message = last_message
+                    existing.updated_at = now
+
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
     
     def get_analysis_context(
         self, 

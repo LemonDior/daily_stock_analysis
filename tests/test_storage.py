@@ -187,6 +187,103 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
+    def test_upsert_cn_stock_master_records_dedupes_same_code_in_batch(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        stats = db.upsert_cn_stock_master_records([
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "exchange": "SSE",
+                "market": "main",
+                "industry": "酿酒行业",
+                "area": "贵州",
+                "list_status": "listed",
+                "is_risk_warning": False,
+                "list_date": None,
+                "delist_date": None,
+                "is_active": True,
+                "source": "test",
+                "source_updated_at": None,
+            },
+            {
+                "code": "600519",
+                "name": "贵州茅台股份有限公司",
+                "exchange": "SSE",
+                "market": "main",
+                "industry": "白酒",
+                "area": "贵州",
+                "list_status": "listed",
+                "is_risk_warning": False,
+                "list_date": None,
+                "delist_date": None,
+                "is_active": True,
+                "source": "test-latest",
+                "source_updated_at": None,
+            },
+        ])
+
+        with db.get_session() as session:
+            rows = session.execute(
+                text("SELECT code, name, industry, source FROM cn_stock_master WHERE code='600519'")
+            ).fetchall()
+
+        self.assertEqual(stats, {"inserted": 1, "updated": 0})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(tuple(rows[0]), ("600519", "贵州茅台股份有限公司", "白酒", "test-latest"))
+
+        DatabaseManager.reset_instance()
+
+    def test_delete_cn_stock_master_records_not_matching_prefixes(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        db.upsert_cn_stock_master_records([
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "exchange": "SSE",
+                "market": "main",
+                "industry": None,
+                "area": None,
+                "list_status": "listed",
+                "is_risk_warning": False,
+                "list_date": None,
+                "delist_date": None,
+                "is_active": True,
+                "source": "test",
+                "source_updated_at": None,
+            },
+            {
+                "code": "430047",
+                "name": "诺思兰德",
+                "exchange": "BSE",
+                "market": "beijing",
+                "industry": None,
+                "area": None,
+                "list_status": "listed",
+                "is_risk_warning": False,
+                "list_date": None,
+                "delist_date": None,
+                "is_active": True,
+                "source": "test",
+                "source_updated_at": None,
+            },
+        ])
+
+        deleted = db.delete_cn_stock_master_records_not_matching_prefixes(("6", "0", "3"))
+
+        with db.get_session() as session:
+            rows = session.execute(
+                text("SELECT code FROM cn_stock_master ORDER BY code")
+            ).fetchall()
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual([row[0] for row in rows], ["600519"])
+
+        DatabaseManager.reset_instance()
+
     def test_schema_migration_row_created_on_init(self):
         DatabaseManager.reset_instance()
         db = DatabaseManager(db_url="sqlite:///:memory:")
@@ -196,7 +293,7 @@ class TestStorage(unittest.TestCase):
                 text("SELECT version, script, checksum FROM schema_migrations ORDER BY version")
             ).fetchall()
 
-        self.assertEqual([row[0] for row in rows], ["0001", "0002", "0003", "0004", "0005", "0006"])
+        self.assertEqual([row[0] for row in rows], ["0001", "0002", "0003", "0004", "0005", "0006", "0007"])
         self.assertEqual(
             [row[1] for row in rows],
             [
@@ -206,6 +303,7 @@ class TestStorage(unittest.TestCase):
                 "V0004__add_chinese_column_comments.sqlite.sql",
                 "V0005__create_cn_stock_master.sqlite.sql",
                 "V0006__fix_cn_stock_master_charset.sqlite.sql",
+                "V0007__create_stock_alert_state.sqlite.sql",
             ],
         )
         self.assertTrue(all(len(row[2]) == 32 for row in rows))
@@ -264,9 +362,41 @@ class TestStorage(unittest.TestCase):
             column_names = {row[1] for row in columns}
             self.assertNotIn("query_id", column_names)
             self.assertNotIn("analysis_summary", column_names)
-            self.assertEqual([row[0] for row in migrations], ["0001", "0002", "0003", "0004", "0005", "0006"])
+            self.assertEqual([row[0] for row in migrations], ["0001", "0002", "0003", "0004", "0005", "0006", "0007"])
 
             DatabaseManager.reset_instance()
+
+    def test_upsert_and_get_stock_alert_state(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        db.upsert_stock_alert_state(
+            rule_id="rule-1",
+            stock_code="600519",
+            alert_type="price_cross",
+            last_condition_met=True,
+            last_trigger_value=1800.0,
+            last_message="first",
+        )
+        db.upsert_stock_alert_state(
+            rule_id="rule-1",
+            stock_code="600519",
+            alert_type="price_cross",
+            last_condition_met=False,
+            last_trigger_value=1799.5,
+            last_message="second",
+        )
+
+        states = db.get_stock_alert_states(["rule-1"])
+
+        self.assertIn("rule-1", states)
+        self.assertEqual(states["rule-1"]["stock_code"], "600519")
+        self.assertEqual(states["rule-1"]["alert_type"], "price_cross")
+        self.assertFalse(states["rule-1"]["last_condition_met"])
+        self.assertEqual(states["rule-1"]["last_trigger_value"], 1799.5)
+        self.assertEqual(states["rule-1"]["last_message"], "second")
+
+        DatabaseManager.reset_instance()
 
 if __name__ == '__main__':
     unittest.main()

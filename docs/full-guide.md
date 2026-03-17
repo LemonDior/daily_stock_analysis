@@ -277,8 +277,8 @@ daily_stock_analysis/
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
-| `CN_STOCK_MASTER_SYNC_ENABLED` | 启用每周日 A 股主数据同步 | `false` |
-| `CN_STOCK_MASTER_SYNC_TIME` | 每周日主数据同步时间 | `21:00` |
+| `CN_STOCK_MASTER_SYNC_ENABLED` | 启用每周五 A 股主数据同步 | `false` |
+| `CN_STOCK_MASTER_SYNC_TIME` | 每周五主数据同步时间 | `20:00` |
 | `LOG_DIR` | 日志目录 | `./logs` |
 
 ---
@@ -462,7 +462,7 @@ schedule:
 
 ### 本地定时任务
 
-内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。
+内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析；同时会固定在每天 18:00 附带执行一次 `stock_daily` 当日补齐任务。该任务会先调用 AkShare 的 `tool_trade_date_hist_sina()` 判断当天是否为 A 股交易日，只有交易日才会根据 `cn_stock_master` 全量补齐 `stock_daily` 当天缺失数据。
 
 #### 命令行方式
 
@@ -472,6 +472,12 @@ python main.py --schedule
 
 # 启动定时模式（启动时不执行，仅等待下次定时触发）
 python main.py --schedule --no-run-immediately
+
+# 手动执行 stock_daily 历史回填
+python3 tests/manual_stock_daily_sync_runner.py history-backfill
+
+# 手动执行 stock_daily 当日补齐（会先检查交易日）
+python3 tests/manual_stock_daily_sync_runner.py daily-sync
 ```
 
 #### 环境变量方式
@@ -483,14 +489,14 @@ python main.py --schedule --no-run-immediately
 | `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
 | `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
 | `SCHEDULE_RUN_IMMEDIATELY` | 启动服务时是否立即运行一次 | `true` | `false` |
-| `CN_STOCK_MASTER_SYNC_ENABLED` | 是否启用每周日 `cn_stock_master` 同步 | `false` | `true` |
-| `CN_STOCK_MASTER_SYNC_TIME` | 每周日同步时间 (HH:MM) | `21:00` | `21:30` |
+| `CN_STOCK_MASTER_SYNC_ENABLED` | 是否启用每周五 `cn_stock_master` 同步 | `false` | `true` |
+| `CN_STOCK_MASTER_SYNC_TIME` | 每周五同步时间 (HH:MM) | `20:00` | `20:30` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
 
 例如在 Docker 中配置：
 
 ```bash
-# 设置启动时不立即分析，并在每周日晚上同步 A 股主数据
+# 设置启动时不立即分析，并在每周五晚上同步 A 股主数据
 docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false -e CN_STOCK_MASTER_SYNC_ENABLED=true ...
 ```
 

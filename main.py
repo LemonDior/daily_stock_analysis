@@ -576,6 +576,14 @@ def main() -> int:
     if bot_clients_started:
         start_bot_stream_clients(config)
 
+    if start_serve or args.schedule or config.schedule_enabled:
+        try:
+            from src.services.stock_alert_service import start_stock_alert_monitor_background
+
+            start_stock_alert_monitor_background(config=config)
+        except Exception as e:
+            logger.error(f"启动股票告警监控失败: {e}")
+
     # === 仅 Web 服务模式：不自动执行分析 ===
     if args.serve_only:
         logger.info("模式: 仅 Web 服务")
@@ -693,14 +701,30 @@ def main() -> int:
                 job_name="daily_analysis",
             )
 
+            from src.services.stock_daily_sync_service import StockDailySyncService
+
+            def stock_daily_sync_task():
+                StockDailySyncService().sync_daily_if_trade_day()
+
+            logger.info(
+                "stock_daily 日线补齐任务已启用: 每日 %s（仅交易日执行）",
+                StockDailySyncService.DAILY_SYNC_TIME,
+            )
+            scheduler.add_daily_task(
+                task=stock_daily_sync_task,
+                schedule_time=StockDailySyncService.DAILY_SYNC_TIME,
+                run_immediately=False,
+                job_name="stock_daily_sync",
+            )
+
             if getattr(config, "cn_stock_master_sync_enabled", False):
-                logger.info("A股主数据周更任务已启用: 每周日 %s", config.cn_stock_master_sync_time)
+                logger.info("A股主数据周更任务已启用: 每周五 %s", config.cn_stock_master_sync_time)
                 from src.services.cn_stock_master_sync_service import CNStockMasterSyncService
 
                 sync_service = CNStockMasterSyncService()
                 scheduler.add_weekly_task(
                     task=sync_service.sync,
-                    weekday="sunday",
+                    weekday="friday",
                     schedule_time=config.cn_stock_master_sync_time,
                     run_immediately=False,
                     job_name="cn_stock_master_sync",

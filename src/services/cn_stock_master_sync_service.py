@@ -16,6 +16,8 @@ from src.storage import DatabaseManager, get_db
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_CN_STOCK_MASTER_CODE_PREFIXES = ("6", "0", "3")
+
 
 class CNStockMasterSyncService:
     """同步 `cn_stock_master` 表的周更服务。"""
@@ -25,18 +27,23 @@ class CNStockMasterSyncService:
 
     def sync(self) -> Dict[str, int]:
         """拉取 A 股股票主数据并写入数据库。"""
+        deleted = self.db.delete_cn_stock_master_records_not_matching_prefixes(
+            ALLOWED_CN_STOCK_MASTER_CODE_PREFIXES
+        )
         records = self.fetch_records()
         stats = self.db.upsert_cn_stock_master_records(records)
         result = {
             "fetched": len(records),
             "inserted": int(stats.get("inserted", 0)),
             "updated": int(stats.get("updated", 0)),
+            "deleted": int(deleted),
         }
         logger.info(
-            "A股主数据同步完成: fetched=%s inserted=%s updated=%s",
+            "A股主数据同步完成: fetched=%s inserted=%s updated=%s deleted=%s",
             result["fetched"],
             result["inserted"],
             result["updated"],
+            result["deleted"],
         )
         return result
 
@@ -69,19 +76,14 @@ class CNStockMasterSyncService:
                 source_updated_at=now,
             )
         )
-        records.extend(
-            self._records_from_bj(
-                ak.stock_info_bj_name_code(),
-                source="akshare.stock_info_bj_name_code",
-                source_updated_at=now,
-            )
-        )
 
         deduped: Dict[str, Dict[str, Any]] = {}
         for item in records:
             code = str(item.get("code") or "").strip()
             name = str(item.get("name") or "").strip()
             if not code or not name:
+                continue
+            if not self._is_allowed_code(code):
                 continue
             deduped[code] = item
 
@@ -235,6 +237,10 @@ class CNStockMasterSyncService:
         if not text:
             return None
         return pd.to_datetime(text, errors="coerce").date() if pd.notna(pd.to_datetime(text, errors="coerce")) else None
+
+    @staticmethod
+    def _is_allowed_code(code: str) -> bool:
+        return str(code or "").startswith(ALLOWED_CN_STOCK_MASTER_CODE_PREFIXES)
 
     @staticmethod
     def _resolve_sz_market(*, code: str, board: str) -> str:

@@ -16,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 📝 **数据库表中文注释示例 migration** — 新增 `V0003__add_chinese_table_comments`，演示如何通过 SQL migration 为现有表补充 MySQL 中文表注释；SQLite 路径保持 no-op，用于兼容不支持表注释的方言。
 - 🏷️ **数据库字段中文注释示例 migration** — 新增 `V0004__add_chinese_column_comments`，通过 `information_schema.columns` 动态保留 MySQL 当前字段定义并补充中文字段注释；同时把“新表和新字段默认补注释”写入迁移规范。
 - 🧾 **A股股票主数据表** — 新增 `cn_stock_master` 表及 `V0005__create_cn_stock_master` migration，用于维护 A 股股票基础资料；字段包含交易所、板块、行业、地域、上市状态、风险警示股标记、数据来源与更新时间，并在 MySQL 路径补齐表注释和字段注释。
-- 🗓️ **A股主数据周更任务** — 新增 `CN_STOCK_MASTER_SYNC_ENABLED` / `CN_STOCK_MASTER_SYNC_TIME` 配置；在 `--schedule` 模式下可于每周日夜间自动通过 AkShare 同步 `cn_stock_master` 表，采用 upsert 方式更新股票名称、板块、行业和风险警示标记。
+- 🗓️ **A股主数据周更任务** — 新增 `CN_STOCK_MASTER_SYNC_ENABLED` / `CN_STOCK_MASTER_SYNC_TIME` 配置；在 `--schedule` 模式下可于每周五 20:00 自动通过 AkShare 同步 `cn_stock_master` 表，采用按 `code` 的 upsert 方式写入：不存在则新增，存在则更新，并保持 `code` 唯一。
 - 🔤 **A股主数据字符集修正** — 新增 `V0006__fix_cn_stock_master_charset`，将 `cn_stock_master` 转为 `utf8mb4`，避免中文股票名在非 UTF-8 默认库配置下写入失败。
+- 🔔 **飞书应用机器人股票告警** — 新增 `FeishuAppSender` 主动推送链路，支持使用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 向 `chat_id` / `open_id` / `user_id` 推送股票告警；`AGENT_EVENT_ALERT_RULES_JSON` 现已真正接入后台轮询，支持 `price_cross` / `change_pct` / `volume_ratio` 三类规则，并通过 `stock_alert_state` 持久化状态避免重启后重复提醒。
+- 📈 **stock_daily 历史回填与交易日补齐** — 新增 `StockDailySyncService`：可按 `cn_stock_master` 中的全部股票代码一次性回填历史日线，并在 `--schedule` 模式下固定每天 18:00 通过 AkShare 交易日历判断是否为交易日；若是，则自动补齐 `stock_daily` 当天缺失的日线数据。新增 `tests/manual_stock_daily_sync_runner.py` 作为手动启动入口，便于按批次回填或单独验证。`stock_daily(code, date)` 继续保持唯一。
 ### 文档
 
 - 新增云服务器 Web 界面部署与访问教程 (Fixes #686)
