@@ -41,6 +41,8 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import (
     declarative_base,
     sessionmaker,
@@ -1340,76 +1342,140 @@ class DatabaseManager:
         if df is None or df.empty:
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
-        
-        saved_count = 0
-        
+
         with self.get_session() as session:
             try:
-                for _, row in df.iterrows():
-                    # 解析日期
-                    row_date = row.get('date')
-                    if isinstance(row_date, str):
-                        row_date = datetime.strptime(row_date, '%Y-%m-%d').date()
-                    elif isinstance(row_date, datetime):
-                        row_date = row_date.date()
-                    elif isinstance(row_date, pd.Timestamp):
-                        row_date = row_date.date()
-                    
-                    # 检查是否已存在
-                    existing = session.execute(
-                        select(StockDaily).where(
+                records = self._prepare_stock_daily_records(df=df, code=code, data_source=data_source)
+                if not records:
+                    logger.warning(f"{code} 没有可保存的有效日线记录")
+                    return 0
+
+                record_dates = [record["date"] for record in records]
+                existing_dates = set(
+                    session.execute(
+                        select(StockDaily.date).where(
                             and_(
                                 StockDaily.code == code,
-                                StockDaily.date == row_date
+                                StockDaily.date.in_(record_dates),
                             )
                         )
-                    ).scalar_one_or_none()
-                    
-                    if existing:
-                        # 更新现有记录
-                        existing.open = row.get('open')
-                        existing.high = row.get('high')
-                        existing.low = row.get('low')
-                        existing.close = row.get('close')
-                        existing.volume = row.get('volume')
-                        existing.amount = row.get('amount')
-                        existing.pct_chg = row.get('pct_chg')
-                        existing.ma5 = row.get('ma5')
-                        existing.ma10 = row.get('ma10')
-                        existing.ma20 = row.get('ma20')
-                        existing.volume_ratio = row.get('volume_ratio')
-                        existing.data_source = data_source
-                        existing.updated_at = datetime.now()
-                    else:
-                        # 创建新记录
-                        record = StockDaily(
-                            code=code,
-                            date=row_date,
-                            open=row.get('open'),
-                            high=row.get('high'),
-                            low=row.get('low'),
-                            close=row.get('close'),
-                            volume=row.get('volume'),
-                            amount=row.get('amount'),
-                            pct_chg=row.get('pct_chg'),
-                            ma5=row.get('ma5'),
-                            ma10=row.get('ma10'),
-                            ma20=row.get('ma20'),
-                            volume_ratio=row.get('volume_ratio'),
-                            data_source=data_source,
-                        )
-                        session.add(record)
-                        saved_count += 1
-                
+                    ).scalars().all()
+                )
+                saved_count = sum(1 for record in records if record["date"] not in existing_dates)
+
+                self._execute_stock_daily_upsert(session=session, records=records)
                 session.commit()
                 logger.info(f"保存 {code} 数据成功，新增 {saved_count} 条")
-                
+
             except Exception as e:
                 session.rollback()
                 logger.error(f"保存 {code} 数据失败: {e}")
                 raise
-        
+
         return saved_count
+
+    @staticmethod
+    def _normalize_stock_daily_date(value: Any) -> Optional[date]:
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, str):
+            return datetime.strptime(value, '%Y-%m-%d').date()
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, pd.Timestamp):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return None
+
+    def _prepare_stock_daily_records(
+        self,
+        *,
+        df: pd.DataFrame,
+        code: str,
+        data_source: str,
+    ) -> List[Dict[str, Any]]:
+        now = datetime.now()
+        records_by_date: Dict[date, Dict[str, Any]] = {}
+
+        for _, row in df.iterrows():
+            row_date = self._normalize_stock_daily_date(row.get('date'))
+            if row_date is None:
+                continue
+
+            records_by_date[row_date] = {
+                'code': code,
+                'date': row_date,
+                'open': row.get('open'),
+                'high': row.get('high'),
+                'low': row.get('low'),
+                'close': row.get('close'),
+                'volume': row.get('volume'),
+                'amount': row.get('amount'),
+                'pct_chg': row.get('pct_chg'),
+                'ma5': row.get('ma5'),
+                'ma10': row.get('ma10'),
+                'ma20': row.get('ma20'),
+                'volume_ratio': row.get('volume_ratio'),
+                'data_source': data_source,
+                'created_at': now,
+                'updated_at': now,
+            }
+
+        return [records_by_date[item_date] for item_date in sorted(records_by_date.keys())]
+
+    def _execute_stock_daily_upsert(self, *, session: Session, records: List[Dict[str, Any]]) -> None:
+        if not records:
+            return
+
+        dialect_name = session.bind.dialect.name if session.bind is not None else ""
+        update_columns = [
+            'open',
+            'high',
+            'low',
+            'close',
+            'volume',
+            'amount',
+            'pct_chg',
+            'ma5',
+            'ma10',
+            'ma20',
+            'volume_ratio',
+            'data_source',
+            'updated_at',
+        ]
+
+        if dialect_name == 'sqlite':
+            statement = sqlite_insert(StockDaily).values(records)
+            statement = statement.on_conflict_do_update(
+                index_elements=['code', 'date'],
+                set_={column: getattr(statement.excluded, column) for column in update_columns},
+            )
+            session.execute(statement)
+            return
+
+        if dialect_name.startswith('mysql'):
+            statement = mysql_insert(StockDaily).values(records)
+            statement = statement.on_duplicate_key_update(
+                **{column: getattr(statement.inserted, column) for column in update_columns}
+            )
+            session.execute(statement)
+            return
+
+        for record in records:
+            existing = session.execute(
+                select(StockDaily).where(
+                    and_(
+                        StockDaily.code == record['code'],
+                        StockDaily.date == record['date'],
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing:
+                for column in update_columns:
+                    setattr(existing, column, record[column])
+            else:
+                session.add(StockDaily(**record))
 
     def upsert_cn_stock_master_records(self, records: List[Dict[str, Any]]) -> Dict[str, int]:
         """

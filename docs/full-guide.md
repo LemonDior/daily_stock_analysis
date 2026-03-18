@@ -462,7 +462,7 @@ schedule:
 
 ### 本地定时任务
 
-内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析；同时会固定在每天 18:00 附带执行一次 `stock_daily` 当日补齐任务。该任务会先调用 AkShare 的 `tool_trade_date_hist_sina()` 判断当天是否为 A 股交易日，只有交易日才会根据 `cn_stock_master` 全量补齐 `stock_daily` 当天缺失数据。
+内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析；同时会固定在每天 18:00 附带执行一次 `stock_daily` 当日补齐任务。该任务会先调用 AkShare 的 `tool_trade_date_hist_sina()` 判断当天是否为 A 股交易日，只有交易日才会根据 `cn_stock_master` 全量补齐 `stock_daily` 当天缺失数据；当待处理 code 数量达到阈值时，会自动切换到公共线程池并发补齐。
 
 #### 命令行方式
 
@@ -473,8 +473,14 @@ python main.py --schedule
 # 启动定时模式（启动时不执行，仅等待下次定时触发）
 python main.py --schedule --no-run-immediately
 
-# 手动执行 stock_daily 历史回填
+# 手动执行 stock_daily 历史回填（默认仅补最近 30 个交易日窗口，按数据量自动启用公共线程池，并支持断点续跑）
 python3 tests/manual_stock_daily_sync_runner.py history-backfill
+
+# 提高并发线程数
+python3 tests/manual_stock_daily_sync_runner.py history-backfill --max-workers 8
+
+# 忽略旧 checkpoint，重新开始一轮历史回填
+python3 tests/manual_stock_daily_sync_runner.py history-backfill --reset-checkpoint
 
 # 手动执行 stock_daily 当日补齐（会先检查交易日）
 python3 tests/manual_stock_daily_sync_runner.py daily-sync

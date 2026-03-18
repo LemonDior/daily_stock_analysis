@@ -16,6 +16,7 @@ import os
 import sys
 import unittest
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -43,8 +44,28 @@ class TestStockDailySyncManualRunner(unittest.TestCase):
     def tearDownClass(cls) -> None:
         DatabaseManager.reset_instance()
 
-    def run_history_backfill_job(self, *, max_codes: Optional[int] = None):
-        result = self.service.backfill_history_from_master(max_codes=max_codes)
+    def run_history_backfill_job(
+        self,
+        *,
+        max_codes: Optional[int] = None,
+        max_workers: int = StockDailySyncService.DEFAULT_HISTORY_BACKFILL_MAX_WORKERS,
+        checkpoint_file: Optional[str] = None,
+        resume: bool = True,
+        reset_checkpoint: bool = False,
+    ):
+        start_date_floor = self.service.get_recent_trade_day_floor(
+            limit=StockDailySyncService.MANUAL_HISTORY_BACKFILL_TRADE_DAYS
+        )
+        checkpoint_path = Path(checkpoint_file) if checkpoint_file else StockDailySyncService.DEFAULT_HISTORY_BACKFILL_CHECKPOINT
+        if reset_checkpoint:
+            checkpoint_path.unlink(missing_ok=True)
+        result = self.service.backfill_history_from_master(
+            max_codes=max_codes,
+            start_date_floor=start_date_floor,
+            max_workers=max_workers,
+            checkpoint_path=checkpoint_path,
+            resume=resume,
+        )
         self._print_result(result)
         return result
 
@@ -73,13 +94,35 @@ def _parse_args() -> argparse.Namespace:
 
     history_backfill = subparsers.add_parser(
         "history-backfill",
-        help="根据 cn_stock_master 全量回填 stock_daily 历史日线",
+        help="根据 cn_stock_master 回填最近 30 个交易日内缺失的 stock_daily 日线",
     )
     history_backfill.add_argument(
         "--max-codes",
         type=int,
         default=None,
         help="限制处理股票数量，便于小批量测试",
+    )
+    history_backfill.add_argument(
+        "--max-workers",
+        type=int,
+        default=StockDailySyncService.DEFAULT_HISTORY_BACKFILL_MAX_WORKERS,
+        help=f"历史回填并发线程数上限，默认 {StockDailySyncService.DEFAULT_HISTORY_BACKFILL_MAX_WORKERS}",
+    )
+    history_backfill.add_argument(
+        "--checkpoint-file",
+        type=str,
+        default=str(StockDailySyncService.DEFAULT_HISTORY_BACKFILL_CHECKPOINT),
+        help="断点续跑 checkpoint 文件路径",
+    )
+    history_backfill.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="忽略已有 checkpoint，从头重新扫描目标代码",
+    )
+    history_backfill.add_argument(
+        "--reset-checkpoint",
+        action="store_true",
+        help="运行前先删除已有 checkpoint",
     )
 
     daily_sync = subparsers.add_parser(
@@ -122,7 +165,13 @@ if __name__ == "__main__":
     TestStockDailySyncManualRunner.setUpClass()
     try:
         if args.command == "history-backfill":
-            runner.run_history_backfill_job(max_codes=args.max_codes)
+            runner.run_history_backfill_job(
+                max_codes=args.max_codes,
+                max_workers=args.max_workers,
+                checkpoint_file=args.checkpoint_file,
+                resume=not args.no_resume,
+                reset_checkpoint=args.reset_checkpoint,
+            )
         else:
             runner.run_daily_sync_job(
                 target_date=_parse_target_date(args.target_date),

@@ -278,13 +278,15 @@ DATABASE_URL=mysql+pymysql://user:password@127.0.0.1:3306/dsa?charset=utf8mb4
 
 如果你启用了内建定时模式，还可以额外开启 `CN_STOCK_MASTER_SYNC_ENABLED=true`，让系统每周五晚上 20:00 自动通过 AkShare 同步 `cn_stock_master` 表。同步时会按 `code` 判断：不存在则新增，存在则更新，并保持 `code` 唯一。
 
-另外，`--schedule` 模式下系统会固定在每天 18:00 执行一次 `stock_daily` 日线补齐任务：先通过 AkShare 的 A 股交易日历接口判断当天是否为交易日；若是，再根据 `cn_stock_master` 中的全部 code 补齐当天缺失的日线数据。历史缺口可通过 `StockDailySyncService.backfill_history_from_master()` 一次性回填。
+另外，`--schedule` 模式下系统会固定在每天 18:00 执行一次 `stock_daily` 日线补齐任务：先通过 AkShare 的 A 股交易日历接口判断当天是否为交易日；若是，再根据 `cn_stock_master` 中的全部 code 补齐当天缺失的日线数据。手动历史缺口回填和每日定时补齐都会按待处理 code 数量自动判断是否启用公共线程池；其中测试类手动入口 `history-backfill` 默认仅补最近 30 个交易日窗口内的缺口，并支持 checkpoint 断点续跑。
 
 如需手动执行，可直接运行测试类启动器：
 
 ```bash
 python3 tests/manual_stock_daily_sync_runner.py history-backfill
 python3 tests/manual_stock_daily_sync_runner.py history-backfill --max-codes 200
+python3 tests/manual_stock_daily_sync_runner.py history-backfill --max-workers 8
+python3 tests/manual_stock_daily_sync_runner.py history-backfill --reset-checkpoint
 python3 tests/manual_stock_daily_sync_runner.py daily-sync
 ```
 
