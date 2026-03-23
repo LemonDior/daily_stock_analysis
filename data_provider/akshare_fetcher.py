@@ -1482,7 +1482,7 @@ class AkshareFetcher(BaseFetcher):
             return chip
             
         except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
+            logger.warning(f"[API错误] 获取 {stock_code} 筹码分布失败，已降级跳过: {e}")
             return None
     
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:

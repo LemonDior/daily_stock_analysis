@@ -242,6 +242,8 @@ cp .env.example .env && vim .env
 python main.py
 ```
 
+`.env.example` 现在已经按模块汇总了仓库内主要环境变量，并补了中文注释；不确定某个开关写在哪里时，优先直接搜这个文件。
+
 如果你不用 Web，推荐直接在 `.env` 里按条写渠道：
 
 ```env

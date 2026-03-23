@@ -460,6 +460,19 @@ def _execute_tools(
 
     Single tools run inline; multiple tools run in parallel threads.
     """
+    valid_tool_calls = [
+        tc for tc in tool_calls
+        if isinstance(getattr(tc, "name", None), str)
+        and tc.name.strip()
+        and isinstance(getattr(tc, "arguments", None), dict)
+    ]
+    dropped = len(tool_calls) - len(valid_tool_calls)
+    if dropped:
+        logger.warning("Skipped %d malformed tool call(s) before execution", dropped)
+
+    tool_calls = valid_tool_calls
+    if not tool_calls:
+        return []
 
     def _exec_single(tc_item):
         t0 = time.time()

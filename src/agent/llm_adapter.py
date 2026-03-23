@@ -376,19 +376,29 @@ class LLMToolAdapter:
 
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
+                func = getattr(tc, "function", None)
+                tool_name = getattr(func, "name", None)
+                if not isinstance(tool_name, str) or not tool_name.strip():
+                    logger.warning("Agent LLM: skipping malformed tool call with empty name")
+                    continue
+
                 args: Dict[str, Any] = {}
-                if tc.function.arguments:
+                raw_arguments = getattr(func, "arguments", None)
+                if raw_arguments:
                     try:
-                        args = json.loads(tc.function.arguments)
+                        args = json.loads(raw_arguments)
                     except json.JSONDecodeError:
-                        args = {"raw": tc.function.arguments}
+                        args = {"raw": raw_arguments}
+                if not isinstance(args, dict):
+                    logger.warning("Agent LLM: skipping malformed tool call '%s' with non-object arguments", tool_name)
+                    continue
 
                 # Extract thought_signature: stored in provider_specific_fields (Gemini 3 via LiteLLM proxy)
                 psf = getattr(tc, "provider_specific_fields", None)
                 if psf is not None:
                     sig = psf.get("thought_signature") if isinstance(psf, dict) else getattr(psf, "thought_signature", None)
                 else:
-                    func_psf = getattr(tc.function, "provider_specific_fields", None)
+                    func_psf = getattr(func, "provider_specific_fields", None)
                     if func_psf is not None:
                         sig = func_psf.get("thought_signature") if isinstance(func_psf, dict) else getattr(func_psf, "thought_signature", None)
                     else:
@@ -396,7 +406,7 @@ class LLMToolAdapter:
 
                 tool_calls.append(ToolCall(
                     id=tc.id,
-                    name=tc.function.name,
+                    name=tool_name,
                     arguments=args,
                     thought_signature=sig,
                 ))
